@@ -5,8 +5,6 @@
 ## Features
 - Basic window management
 - Keyboard input handling
-- Double buffering to eliminate flickering
-- Simple text display (each character as a rectangle)
 
 ## Getting Started
 
