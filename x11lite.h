@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <signal.h> // For robust signal handling
 
 // --- Data Structures ---
 typedef struct
@@ -66,14 +67,34 @@ void x11lite_present(X11LiteWindow* win);
 
 static Display* global_display = NULL;
 
+// Helper to set foreground color efficiently
+static inline void set_foreground(X11LiteWindow* win, uint32_t color)
+{
+    XSetForeground(win->display, win->gc, color);
+}
+
+// Robust signal handler for graceful termination
+static void handle_signal(int sig)
+{
+    if (global_display)
+    {
+        XCloseDisplay(global_display);
+        global_display = NULL;
+    }
+    exit(0);
+}
+
 // --- Initialization ---
 int x11lite_init()
 {
     global_display = XOpenDisplay(NULL);
     if (!global_display)
-    {
-        return 0; // Failed to open display
-    }
+        return 0;
+
+    // Setup signal handlers for graceful shutdown
+    signal(SIGINT, handle_signal);  // Ctrl+C
+    signal(SIGTERM, handle_signal); // Termination request
+
     return 1;
 }
 
@@ -119,8 +140,12 @@ X11LiteWindow x11lite_create_window(int width, int height, const char* title)
 
 void x11lite_close_window(X11LiteWindow* win)
 {
-    XDestroyWindow(win->display, win->window);
-    win->is_open = 0;
+    if (win->window)
+    {
+        XFreeGC(win->display, win->gc); // Free graphical context
+        XDestroyWindow(win->display, win->window);
+        win->is_open = 0;
+    }
 }
 
 int x11lite_window_is_open(X11LiteWindow* win)
@@ -170,6 +195,10 @@ int x11lite_poll_event(X11LiteWindow* win, X11LiteEvent* event)
                     win->is_open = 0;
                 }
                 break;
+            case ConfigureNotify: // Handle window resize event
+                win->width = xevent.xconfigure.width;
+                win->height = xevent.xconfigure.height;
+                break;
             default:
                 event->type = X11LITE_EVENT_NONE;
                 break;
@@ -182,25 +211,25 @@ int x11lite_poll_event(X11LiteWindow* win, X11LiteEvent* event)
 // --- Drawing Operations ---
 void x11lite_clear(X11LiteWindow* win, uint32_t color)
 {
-    XSetForeground(win->display, win->gc, color);
+    set_foreground(win, color);
     XFillRectangle(win->display, win->window, win->gc, 0, 0, win->width, win->height);
 }
 
 void x11lite_draw_pixel(X11LiteWindow* win, int x, int y, uint32_t color)
 {
-    XSetForeground(win->display, win->gc, color);
+    set_foreground(win, color);
     XDrawPoint(win->display, win->window, win->gc, x, y);
 }
 
 void x11lite_draw_rect(X11LiteWindow* win, int x, int y, int w, int h, uint32_t color)
 {
-    XSetForeground(win->display, win->gc, color);
+    set_foreground(win, color);
     XDrawRectangle(win->display, win->window, win->gc, x, y, w, h);
 }
 
 void x11lite_draw_line(X11LiteWindow* win, int x1, int y1, int x2, int y2, uint32_t color)
 {
-    XSetForeground(win->display, win->gc, color);
+    set_foreground(win, color);
     XDrawLine(win->display, win->window, win->gc, x1, y1, x2, y2);
 }
 
