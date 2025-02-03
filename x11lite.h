@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <signal.h> // For robust signal handling
+#include <signal.h>
 
 // --- Data Structures ---
 typedef struct
@@ -42,22 +42,19 @@ typedef struct
 } X11LiteEvent;
 
 // --- Initialization & Shutdown ---
-int x11lite_init();
-void x11lite_shutdown();
-
-// --- Window Management ---
 X11LiteWindow x11lite_create_window(int width, int height, const char* title);
-void x11lite_close_window(X11LiteWindow* win);
-int x11lite_window_is_open(X11LiteWindow* win);
-void x11lite_set_title(X11LiteWindow* win, const char* title);
+void x11lite_shutdown(X11LiteWindow* win);
 
 // --- Event Handling ---
 int x11lite_poll_event(X11LiteWindow* win, X11LiteEvent* event);
+int x11lite_is_key_pressed(X11LiteEvent* event, int keycode);
+int x11lite_is_mouse_button_pressed(X11LiteEvent* event, int button);
 
 // --- Drawing Operations ---
+uint32_t x11lite_rgb(uint8_t r, uint8_t g, uint8_t b);
 void x11lite_clear(X11LiteWindow* win, uint32_t color);
 void x11lite_draw_pixel(X11LiteWindow* win, int x, int y, uint32_t color);
-void x11lite_draw_rect(X11LiteWindow* win, int x, int y, int w, int h, uint32_t color);
+void x11lite_draw_rect(X11LiteWindow* win, int x, int y, int w, int h, uint32_t color, int filled);
 void x11lite_draw_line(X11LiteWindow* win, int x1, int y1, int x2, int y2, uint32_t color);
 void x11lite_present(X11LiteWindow* win);
 
@@ -85,37 +82,24 @@ static void handle_signal(int sig)
 }
 
 // --- Initialization ---
-int x11lite_init()
-{
-    global_display = XOpenDisplay(NULL);
-    if (!global_display)
-        return 0;
-
-    // Setup signal handlers for graceful shutdown
-    signal(SIGINT, handle_signal);  // Ctrl+C
-    signal(SIGTERM, handle_signal); // Termination request
-
-    return 1;
-}
-
-void x11lite_shutdown()
-{
-    if (global_display)
-    {
-        XCloseDisplay(global_display);
-        global_display = NULL;
-    }
-}
-
-// --- Window Management ---
 X11LiteWindow x11lite_create_window(int width, int height, const char* title)
 {
     X11LiteWindow win = {0};
+
+    // Initialize display
+    global_display = XOpenDisplay(NULL);
+    if (!global_display)
+    {
+        fprintf(stderr, "Error: Unable to open X11 display.\n");
+        exit(1);
+    }
+
     win.display = global_display;
     win.screen = DefaultScreen(win.display);
     win.width = width;
     win.height = height;
 
+    // Create window
     win.window = XCreateSimpleWindow(
         win.display,
         RootWindow(win.display, win.screen),
@@ -125,37 +109,42 @@ X11LiteWindow x11lite_create_window(int width, int height, const char* title)
         WhitePixel(win.display, win.screen)
     );
 
+    // Set window title
+    XStoreName(win.display, win.window, title);
+
+    // Enable close button
     win.wm_delete_window = XInternAtom(win.display, "WM_DELETE_WINDOW", False);
     XSetWMProtocols(win.display, win.window, &win.wm_delete_window, 1);
 
+    // Select input events
     XSelectInput(win.display, win.window, ExposureMask | KeyPressMask | KeyReleaseMask |
                   ButtonPressMask | ButtonReleaseMask | PointerMotionMask | StructureNotifyMask);
+
+    // Map window and create graphics context
     XMapWindow(win.display, win.window);
     win.gc = XCreateGC(win.display, win.window, 0, NULL);
     win.is_open = 1;
 
-    XStoreName(win.display, win.window, title);
+    // Setup signal handlers for graceful shutdown
+    signal(SIGINT, handle_signal);
+    signal(SIGTERM, handle_signal);
+
     return win;
 }
 
-void x11lite_close_window(X11LiteWindow* win)
+void x11lite_shutdown(X11LiteWindow* win)
 {
     if (win->window)
     {
-        XFreeGC(win->display, win->gc); // Free graphical context
+        XFreeGC(win->display, win->gc);
         XDestroyWindow(win->display, win->window);
         win->is_open = 0;
     }
-}
-
-int x11lite_window_is_open(X11LiteWindow* win)
-{
-    return win->is_open;
-}
-
-void x11lite_set_title(X11LiteWindow* win, const char* title)
-{
-    XStoreName(win->display, win->window, title);
+    if (global_display)
+    {
+        XCloseDisplay(global_display);
+        global_display = NULL;
+    }
 }
 
 // --- Event Handling ---
@@ -195,7 +184,7 @@ int x11lite_poll_event(X11LiteWindow* win, X11LiteEvent* event)
                     win->is_open = 0;
                 }
                 break;
-            case ConfigureNotify: // Handle window resize event
+            case ConfigureNotify:
                 win->width = xevent.xconfigure.width;
                 win->height = xevent.xconfigure.height;
                 break;
@@ -208,7 +197,22 @@ int x11lite_poll_event(X11LiteWindow* win, X11LiteEvent* event)
     return 0;
 }
 
+int x11lite_is_key_pressed(X11LiteEvent* event, int keycode)
+{
+    return (event->type == X11LITE_EVENT_KEY_PRESS && event->data.key.keycode == keycode);
+}
+
+int x11lite_is_mouse_button_pressed(X11LiteEvent* event, int button)
+{
+    return (event->type == X11LITE_EVENT_MOUSE_BUTTON_PRESS && event->data.mouse.button == button);
+}
+
 // --- Drawing Operations ---
+uint32_t x11lite_rgb(uint8_t r, uint8_t g, uint8_t b)
+{
+    return (r << 16) | (g << 8) | b;
+}
+
 void x11lite_clear(X11LiteWindow* win, uint32_t color)
 {
     set_foreground(win, color);
@@ -221,10 +225,13 @@ void x11lite_draw_pixel(X11LiteWindow* win, int x, int y, uint32_t color)
     XDrawPoint(win->display, win->window, win->gc, x, y);
 }
 
-void x11lite_draw_rect(X11LiteWindow* win, int x, int y, int w, int h, uint32_t color)
+void x11lite_draw_rect(X11LiteWindow* win, int x, int y, int w, int h, uint32_t color, int filled)
 {
     set_foreground(win, color);
-    XDrawRectangle(win->display, win->window, win->gc, x, y, w, h);
+    if (filled)
+        XFillRectangle(win->display, win->window, win->gc, x, y, w, h);
+    else
+        XDrawRectangle(win->display, win->window, win->gc, x, y, w, h);
 }
 
 void x11lite_draw_line(X11LiteWindow* win, int x1, int y1, int x2, int y2, uint32_t color)
